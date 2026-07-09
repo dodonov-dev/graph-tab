@@ -10,20 +10,7 @@
     "128": "icon128.png"
   },
   "background": {
-    "service_worker": "background.js",
-    "scripts": ["background.js"]
-  },
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "graph-tab@andreydodonov.dev",
-      "strict_min_version": "140.0",
-      "data_collection_permissions": {
-        "required": ["none"]
-      }
-    },
-    "gecko_android": {
-      "strict_min_version": "142.0"
-    }
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
