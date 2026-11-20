@@ -29,7 +29,10 @@ Works on Chrome and Edge, Firefox is WiP.
   paginated by the "Load older commits" footer. The endpoints return the entire
   fork network with interleaved commits, so the focused repository is isolated
   by **reachability** from `meta.users[0].heads` (author/owner/block filtering
-  gives wrong results, see the findings doc).
+  gives wrong results, see the findings doc). In a busy fork network most
+  entries are other forks' commits (ghostty: ~1 in 100 near the top), so
+  windows are sized by the density of drawn commits seen so far, aiming for
+  ~100 more drawn commits per load in as few requests as possible.
 - **Freshness** (`src/gitproto.js`, `src/webfresh.js`): the network-graph
   snapshot lags pushes by minutes to hours, so branch heads are re-read live
   and missing commits spliced in. Public repos: git smart-HTTP v2 on

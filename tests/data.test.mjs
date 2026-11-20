@@ -384,6 +384,65 @@ test('chunk windows use the endpoint\'s inclusive end parameter', async () => {
   }
 });
 
+test('a sparse fork network still adds about a window of drawn commits per load', async () => {
+  // Busy fork networks interleave their commits with the focused repo's:
+  // here only every 10th entry of the network array is on main. A fixed
+  // 100-entry window would add ~10 drawn commits per click.
+  const TOTAL = 6000;
+  const oid = (i) => i.toString(16).padStart(40, '0');
+  const entry = (i) => {
+    const onMain = i % 10 === 0;
+    const base = Math.floor(i / 10) * 10;
+    return {
+      id: onMain ? oid(i) : oid(i + 0x100000),
+      parents: onMain ? (i > 0 ? [[oid(i - 10), 0, 0]] : []) : [[oid(base), 0, 0]],
+      author: 'X', login: 'x', date: '2026-01-01 00:00:00',
+      message: onMain ? `main ${i}` : `fork ${i}`,
+    };
+  };
+  const chunkUrls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.document = publicDocument; // anonymous git refused below: snapshot heads
+  globalThis.fetch = async (url) => {
+    const path = String(url);
+    if (path.includes('/network/meta')) {
+      return jsonResponse({
+        nethash: 'h',
+        dates: new Array(TOTAL).fill('2026-01-01'),
+        users: [{ name: 'o', repo: 'r', heads: [{ name: 'main', id: oid(TOTAL - 10) }] }],
+      });
+    }
+    if (path.includes('/network/chunk')) {
+      const params = new URL(path, 'https://github.com').searchParams;
+      chunkUrls.push(params);
+      const commits = [];
+      for (let i = Number(params.get('start')); i <= Number(params.get('end')); i++) commits.push(entry(i));
+      return jsonResponse({ commits });
+    }
+    return new Response('', { status: 401 });
+  };
+  try {
+    const source = await openRepoGraph('o', 'r');
+    await source.ready;
+    const opened = source.view().commits.length;
+    assert.ok(opened >= 100, `open draws a window's worth, got ${opened}`);
+    assert.ok(chunkUrls.length <= 3, `in a few requests, got ${chunkUrls.length}`);
+
+    const before = chunkUrls.length;
+    await source.loadOlder();
+    const older = source.view().commits.length;
+    assert.ok(older - opened >= 100, `load older adds a window's worth, got ${older - opened}`);
+    assert.ok(older - opened < 200, `without fetching far more than asked, got ${older - opened}`);
+    assert.equal(chunkUrls.length - before, 1);
+    // every drawn commit is main's: fork entries stay filtered out
+    assert.ok(source.view().filtered);
+    assert.ok(source.view().commits.every((c) => c.subject.startsWith('main')));
+  } finally {
+    globalThis.fetch = realFetch;
+    delete globalThis.document;
+  }
+});
+
 // --- public freshen completeness ------------------------------------------
 // Minimal pack fabrication (plain commit objects only, no deltas).
 
