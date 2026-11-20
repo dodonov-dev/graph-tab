@@ -353,10 +353,10 @@ test('chunk windows use the endpoint\'s inclusive end parameter', async () => {
     }
     if (path.includes('/network/chunk')) {
       chunkUrls.push(new URL(path, 'https://github.com'));
-      // second (older) window: persistently broken
+      // older windows: persistently broken
       if (chunkUrls.length > 1) return new Response('<html>error</html>', { status: 500 });
       return jsonResponse({
-        commits: [{ id: OID, parents: [], author: 'X', login: 'x', date: '2026-01-01 00:00:00', message: 'hi' }],
+        commits: [{ id: OID, parents: ['9'.repeat(40)], author: 'X', login: 'x', date: '2026-01-01 00:00:00', message: 'hi' }],
       });
     }
     throw new Error('unexpected url: ' + path);
@@ -371,8 +371,9 @@ test('chunk windows use the endpoint\'s inclusive end parameter', async () => {
     assert.equal(source.olderCount(), 50);
 
     await source.loadOlder();
-    // older window [0, 50) sent as start=0&end=49; its failure is counted,
-    // not silently swallowed, and pagination still terminates
+    // older window [0, 50) sent as start=0&end=49; a failure on an explicit
+    // load is counted, not silently swallowed (the quiet top-up on open was
+    // not), and pagination still terminates
     assert.equal(chunkUrls.at(-1).searchParams.get('start'), '0');
     assert.equal(chunkUrls.at(-1).searchParams.get('end'), '49');
     assert.equal(source.failedWindows(), 1);
@@ -385,58 +386,25 @@ test('chunk windows use the endpoint\'s inclusive end parameter', async () => {
 });
 
 test('a sparse fork network still adds about a window of drawn commits per load', async () => {
-  // Busy fork networks interleave their commits with the focused repo's:
-  // here only every 10th entry of the network array is on main. A fixed
-  // 100-entry window would add ~10 drawn commits per click.
-  const TOTAL = 6000;
-  const oid = (i) => i.toString(16).padStart(40, '0');
-  const entry = (i) => {
-    const onMain = i % 10 === 0;
-    const base = Math.floor(i / 10) * 10;
-    return {
-      id: onMain ? oid(i) : oid(i + 0x100000),
-      parents: onMain ? (i > 0 ? [[oid(i - 10), 0, 0]] : []) : [[oid(base), 0, 0]],
-      author: 'X', login: 'x', date: '2026-01-01 00:00:00',
-      message: onMain ? `main ${i}` : `fork ${i}`,
-    };
-  };
-  const chunkUrls = [];
+  // Only every 10th entry is on main: a fixed 100-entry window would add
+  // ~10 drawn commits per click.
+  const sizes = [];
   const realFetch = globalThis.fetch;
-  globalThis.document = publicDocument; // anonymous git refused below: snapshot heads
-  globalThis.fetch = async (url) => {
-    const path = String(url);
-    if (path.includes('/network/meta')) {
-      return jsonResponse({
-        nethash: 'h',
-        dates: new Array(TOTAL).fill('2026-01-01'),
-        users: [{ name: 'o', repo: 'r', heads: [{ name: 'main', id: oid(TOTAL - 10) }] }],
-      });
-    }
-    if (path.includes('/network/chunk')) {
-      const params = new URL(path, 'https://github.com').searchParams;
-      chunkUrls.push(params);
-      const commits = [];
-      for (let i = Number(params.get('start')); i <= Number(params.get('end')); i++) commits.push(entry(i));
-      return jsonResponse({ commits });
-    }
-    return new Response('', { status: 401 });
-  };
+  globalThis.document = publicDocument;
+  globalThis.fetch = sparseNetworkFetch(6000, 10, sizes);
   try {
     const source = await openRepoGraph('o', 'r');
     await source.ready;
     const opened = source.view().commits.length;
     assert.ok(opened >= 100, `open draws a window's worth, got ${opened}`);
-    assert.ok(chunkUrls.length <= 3, `in a few requests, got ${chunkUrls.length}`);
 
-    const before = chunkUrls.length;
     await source.loadOlder();
-    const older = source.view().commits.length;
-    assert.ok(older - opened >= 100, `load older adds a window's worth, got ${older - opened}`);
-    assert.ok(older - opened < 200, `without fetching far more than asked, got ${older - opened}`);
-    assert.equal(chunkUrls.length - before, 1);
-    // every drawn commit is main's: fork entries stay filtered out
-    assert.ok(source.view().filtered);
-    assert.ok(source.view().commits.every((c) => c.subject.startsWith('main')));
+    const { commits } = source.view();
+    const added = commits.length - opened;
+    assert.ok(added >= 100 && added < 200, `load older adds about a window's worth, got ${added}`);
+    assert.ok(sizes.length <= 4, `in a few requests, got ${sizes.length}`);
+    // fork entries stay filtered out
+    assert.ok(commits.every((c) => c.subject === 'main'));
   } finally {
     globalThis.fetch = realFetch;
     delete globalThis.document;
@@ -789,6 +757,107 @@ test('the default branch stays drawn, in lane 0, when only another branch is pic
     assert.equal(source.pinnedOid, OID);
     assert.ok(source.selected.has('main'));
     assert.deepEqual(source.view().commits.map((c) => c.oid), [oidOf(side), OID]);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete globalThis.document;
+  }
+});
+
+// --- window sizing in a sparse fork network --------------------------------
+
+// Only every `every`-th network entry is on main; the rest fork off it.
+function sparseNetworkFetch(total, every, chunkSizes = []) {
+  const oid = (i) => i.toString(16).padStart(40, '0');
+  return async (url) => {
+    const path = String(url);
+    if (path.includes('/network/meta')) {
+      return jsonResponse({
+        nethash: 'h',
+        dates: new Array(total).fill('2026-01-01'),
+        users: [{ name: 'o', repo: 'r', heads: [{ name: 'main', id: oid(Math.floor((total - 1) / every) * every) }] }],
+      });
+    }
+    if (path.includes('/network/chunk')) {
+      const params = new URL(path, 'https://github.com').searchParams;
+      const [start, end] = [Number(params.get('start')), Number(params.get('end'))];
+      chunkSizes.push(end - start + 1);
+      const commits = [];
+      for (let i = start; i <= end; i++) {
+        const base = i - (i % every);
+        commits.push({
+          id: i === base ? oid(i) : oid(i + 0x1000000),
+          parents: i === base ? (i > 0 ? [[oid(i - every), 0, 0]] : []) : [[oid(base), 0, 0]],
+          author: 'X', login: 'x', date: '2026-01-01 00:00:00', message: i === base ? 'main' : 'fork',
+        });
+      }
+      return jsonResponse({ commits });
+    }
+    return new Response('', { status: 401 }); // anonymous git refused: snapshot heads
+  };
+}
+
+test('a very sparse network is searched within the request budget, not without bound', async () => {
+  const sizes = [];
+  const realFetch = globalThis.fetch;
+  globalThis.document = publicDocument;
+  globalThis.fetch = sparseNetworkFetch(40000, 1000, sizes);
+  try {
+    const source = await openRepoGraph('o', 'r');
+    await source.ready;
+    sizes.length = 0;
+    await source.loadOlder();
+    assert.equal(sizes.length, 4);
+    assert.ok(sizes.every((n) => n <= 2000), `windows capped, got ${sizes}`);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete globalThis.document;
+  }
+});
+
+test('a fully drawn history offers no older load and fetches nothing more', async () => {
+  let chunks = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.document = publicDocument;
+  globalThis.fetch = async (url) => {
+    const path = String(url);
+    if (path.includes('/network/meta')) {
+      return jsonResponse({
+        nethash: 'h',
+        dates: new Array(150).fill('2026-01-01'),
+        users: [{ name: 'o', repo: 'r', heads: [{ name: 'main', id: OID }] }],
+      });
+    }
+    if (path.includes('/network/chunk')) {
+      chunks++;
+      // main is a single root commit; older entries are other forks'
+      return jsonResponse({
+        commits: [{ id: OID, parents: [], author: 'X', login: 'x', date: '2026-01-01 00:00:00', message: 'root' }],
+      });
+    }
+    return new Response('', { status: 401 });
+  };
+  try {
+    const source = await openRepoGraph('o', 'r');
+    await source.ready;
+    assert.equal(source.hasMore(), false);
+    await source.loadOlder();
+    assert.equal(chunks, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete globalThis.document;
+  }
+});
+
+test('a head below the first window is searched for with big windows, not 100 at a time', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.document = publicDocument;
+  globalThis.fetch = sparseNetworkFetch(6000, 1000); // main's head is 1000 entries down
+  try {
+    const source = await openRepoGraph('o', 'r');
+    await source.ready;
+    assert.equal(source.view().filtered, false); // raw network until the head is in
+    await source.loadOlder();
+    assert.equal(source.view().filtered, true);
   } finally {
     globalThis.fetch = realFetch;
     delete globalThis.document;

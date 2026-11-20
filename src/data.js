@@ -30,12 +30,9 @@ import { loadSelection, saveSelection, resolveSelection } from './branches.js';
 
 const WINDOW = 100;
 
-// The network array interleaves every fork's commits, so in a busy network
-// (ghostty: ~1 in 100 entries near the top is on main) a 100-entry window
-// adds next to nothing to the drawn branches. Windows are therefore sized by
-// the density seen so far, until about WINDOW more commits are drawn: a
-// dense repo still pays one 100-entry request, a sparse one a few big ones.
-// The endpoint serves big ranges fine (5000 entries ≈ 1.8 MB, < 1 s).
+// In a busy fork network most entries are other forks' commits (ghostty: ~1
+// in 100 near the top is on main), so windows are sized by the density of
+// drawn commits so far. The endpoint serves big ranges fine (5000 ≈ 1.8 MB).
 const MAX_CHUNK = 2000;
 const MAX_FILL_REQUESTS = 4;
 
@@ -470,70 +467,65 @@ export async function openRepoGraph(owner, repo, onProgress = () => {}) {
   const isLoaded = (oid) => !!oid && byOid.has(oid);
   let selected = resolveSelection(loadSelection(owner, repo), branches, defaultBranch, isLoaded);
 
-  // What the selected branches draw: `count` commits in all, `net` of them
-  // from the snapshot windows (the density estimate), and whether any of
-  // them still has a parent no window has brought in — if none does, older
-  // windows cannot add anything to the drawn branches. The snapshot head
-  // counts as a root too: before a moved branch is bridged, that is where
-  // its loaded history starts.
+  // What the selected branches draw, rooted like view(): the live head once
+  // loaded, else the snapshot head (where a moved branch's history starts
+  // until it is bridged). `net` counts snapshot-window commits (the density
+  // estimate), `open` whether a drawn commit still has an unloaded parent,
+  // `missing` whether a selected snapshot head is still in older windows.
   function drawn() {
     const roots = [];
+    let missing = false;
     for (const branch of branches) {
-      if (selected.has(branch.name)) roots.push(branch.oid, branch.snapOid);
+      if (!selected.has(branch.name) || !branch.oid) continue;
+      const root = byOid.has(branch.oid) ? branch.oid : branch.snapOid;
+      if (root && byOid.has(root)) roots.push(root);
+      else if (root) missing = true;
     }
-    const reachable = reachableFrom(byOid, roots.filter(Boolean));
+    const reachable = reachableFrom(byOid, roots);
     let net = 0;
     let open = false;
     for (const oid of reachable) {
       if (!fetchedOids.has(oid)) net++;
       if (!open && byOid.get(oid).parents.some((parent) => !byOid.has(parent))) open = true;
     }
-    return { count: reachable.size, net, open };
+    return { count: reachable.size, net, open, missing };
   }
+  // Nothing drawn means the view shows the raw network, which any window adds to.
+  const unfinished = (d) => d.open || d.missing || d.count === 0;
 
-  // Drawn snapshot commits per network entry in the last window fetched.
-  // Windows are sized by the lower of this and the average over all that is
-  // loaded: either alone is noisy (fork activity clusters at the top of the
-  // array; merges bring in bursts), and erring towards a bigger window costs
-  // some bytes where erring smaller costs another round trip.
-  let density = Infinity;
-
-  // Fetch older snapshot windows until `target` commits are drawn, the
-  // drawn history is complete, or the request budget is spent.
-  async function fill(target) {
-    for (let i = 0; i < MAX_FILL_REQUESTS && loadedStart > 0; i++) {
-      const { count, net, open } = drawn();
-      if (i > 0 && (count >= target || !open)) return;
-      // Nothing drawn means no selected head is in the window at all; the
-      // view then falls back to the raw network, so one plain window it is.
-      if (i > 0 && net === 0) return;
-      const rate = Math.min(density, net / (end - loadedStart));
-      const size = rate > 0
-        ? Math.min(MAX_CHUNK, Math.max(WINDOW, Math.ceil(((target - count) * 1.1) / rate)))
-        : WINDOW;
+  // Fetch older windows until `want` more commits are drawn, the drawn
+  // history is complete, or the request budget is spent. A `quiet` fill is
+  // opportunistic: a failed window is left for an explicit click to retry.
+  async function fill(want, d = drawn(), quiet = false) {
+    const target = d.count + want;
+    for (let i = 0; i < MAX_FILL_REQUESTS && loadedStart > 0 && unfinished(d); i++) {
+      if (i > 0 && (d.count >= target || (d.count === 0 && !d.missing))) return;
+      // No density to go by while only a stub or nothing is drawn: a big
+      // window while there is history to find, else (raw network) a plain one.
+      const size = d.net > 0
+        ? Math.min(MAX_CHUNK, Math.max(WINDOW, Math.ceil(((target - d.count) * (end - loadedStart)) / d.net)))
+        : d.count > 0 || d.missing ? MAX_CHUNK : WINDOW;
       const olderEnd = loadedStart;
       const olderStart = Math.max(0, olderEnd - size);
-      loadedStart = olderStart; // advance even on failure so a bad window can't loop
       let ok = false;
       try {
         ok = await fetchWindow(olderStart, olderEnd);
       } catch {
-        // counted below; the view keeps its consistent loaded set
+        // handled below; the view keeps its consistent loaded set
       }
       if (!ok) {
-        failedWindows++; // surfaced as a banner, not silently skipped
-        return; // a hole cuts reachability, so windows past it draw nothing
+        if (quiet) return;
+        // Counted for a banner, and skipped so a bad window can't loop — but
+        // by no more than a plain window, whatever size was asked for.
+        failedWindows++;
+        loadedStart = Math.max(olderStart, olderEnd - WINDOW);
+        return;
       }
-      const gained = drawn().net - net;
-      density = gained > 0 ? gained / (olderEnd - olderStart) : Infinity;
+      loadedStart = olderStart;
+      d = drawn();
     }
   }
-  // Top up the first window the same way, before freshening: a moved branch
-  // whose snapshot head this brings in is then bridged, not stubbed.
-  {
-    const { count, net, open } = drawn();
-    if (net > 0 && open && count < WINDOW) await fill(WINDOW);
-  }
+
   async function materialise() {
     if (!live) return { fresh: false };
     const chosen = branches.filter((branch) => selected.has(branch.name));
@@ -650,15 +642,15 @@ export async function openRepoGraph(owner, repo, onProgress = () => {}) {
     },
 
     loaded: () => byOid.size,
-    hasMore: () => loadedStart > 0 || openTips().length > 0,
+    hasMore: () => (loadedStart > 0 && unfinished(drawn())) || openTips().length > 0,
     olderCount: () => (loadedStart > 0 ? Math.min(WINDOW, loadedStart) : MAX_PAGES),
     failedWindows: () => failedWindows,
 
-    // The only way more history is fetched after a load: the next snapshot
-    // window, then another budget of commits below branches that were cut
-    // short (the window may already have closed some of those gaps).
+    // The only way more history is fetched after a load: older snapshot
+    // windows, then another budget of commits below branches that were cut
+    // short (the windows may already have closed some of those gaps).
     loadOlder: () => afterPending(async () => {
-      await fill(drawn().count + WINDOW);
+      await fill(WINDOW);
       const tips = openTips();
       if (tips.length === 0) return;
       try {
@@ -671,6 +663,10 @@ export async function openRepoGraph(owner, repo, onProgress = () => {}) {
 
   source.ready = afterPending(async () => {
     try {
+      // Top up a sparse first window (busy fork network) before freshening,
+      // so a moved branch whose snapshot head it brings in is bridged.
+      const d = drawn();
+      if (d.net > 0 && d.count < WINDOW / 2) await fill(WINDOW - d.count, d, true);
       ({ fresh } = await materialise());
       if (tagsPending) tags = await tagsPending;
     } finally {
