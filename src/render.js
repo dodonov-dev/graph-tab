@@ -42,14 +42,27 @@ function py(y) {
   return y * ROW_H + ROW_H / 2;
 }
 
-function relTime(date) {
+// Dates are written in the page's language, not the browser's: GitHub's
+// own <relative-time> reads <html lang> too, so with English GitHub on a
+// Chinese system the commit list said "4 days ago" while ours said "9月21日".
+// An unusable lang falls back to the browser default rather than throwing.
+export function pageLocale() {
+  const lang = document.documentElement.lang;
+  try {
+    return Intl.DateTimeFormat.supportedLocalesOf(lang).length > 0 ? lang : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function relTime(date) {
   const seconds = Math.round((Date.now() - date.getTime()) / 1000);
   if (seconds < 60) return 'now';
   if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
   if (seconds < 86400) return Math.floor(seconds / 3600) + 'h';
   if (seconds < 30 * 86400) return Math.floor(seconds / 86400) + 'd';
   const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleDateString(undefined, {
+  return date.toLocaleDateString(pageLocale(), {
     month: 'short',
     day: 'numeric',
     year: sameYear ? undefined : 'numeric',
@@ -881,7 +894,7 @@ export function render(container, model) {
     row.appendChild(author);
 
     const time = el('time', 'ggt-date', commit.date ? relTime(commit.date) : '—');
-    time.title = commit.date ? commit.date.toLocaleString() : 'Date unavailable';
+    time.title = commit.date ? commit.date.toLocaleString(pageLocale()) : 'Date unavailable';
     row.appendChild(time);
 
     const sha = el('a', 'ggt-sha', commit.oid.slice(0, 7));
