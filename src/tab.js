@@ -107,7 +107,65 @@ export function ensureTab(onOpen) {
   link.appendChild(label);
   item.appendChild(link);
   nav.appendChild(item);
+  keepInView(item);
   return link;
+}
+
+// GitHub's UnderlineNav lays its tabs out on one wrapping line and hides
+// whatever wraps; its "More" menu lists only the tabs that registered
+// themselves as clipped (each React item watches itself with useIsClipped).
+// Our tab is not a React item, so once the window got narrow enough for it
+// to wrap it was simply gone — not on the bar, not in More, and with nothing
+// else overflowing there was not even a More button.
+//
+// So the tab keeps its place at the end while it fits, and otherwise steps
+// in front of GitHub's own tabs until it does: the tabs it displaces are
+// GitHub's, and they clip and move into More through GitHub's own logic.
+// Re-run whenever the list changes width — window resizes, and the More
+// button appearing or going away.
+let navResize = null;
+
+function keepInView(item) {
+  navResize?.disconnect();
+  navResize = new ResizeObserver(() => {
+    if (item.isConnected) placeInView(item);
+    else navResize.disconnect();
+  });
+  navResize.observe(item.parentElement);
+  placeInView(item);
+}
+
+export function placeInView(item) {
+  const list = item.parentElement;
+  // GitHub's own tabs, in order, clipped ones included. Skip by role, not by
+  // aria-hidden: GitHub sets aria-hidden on every tab it has clipped, and
+  // only the wrap spacer is role="presentation".
+  const tabs = [...list.children].filter((node) => node !== item && node.getAttribute('role') !== 'presentation');
+  if (tabs.length === 0) return;
+  const more = list.nextElementSibling; // UnderlineNav's More button container
+  const fits = () => {
+    const box = item.getBoundingClientRect();
+    const line = tabs[0].getBoundingClientRect().top;
+    const onFirstLine = Math.abs(box.top - line) < 1;
+    if (onFirstLine && box.right <= list.getBoundingClientRect().right + 1) return true;
+    // GitHub shows More only while one of its own tabs is clipped, and the
+    // button takes its width from the list. If our tab is the only thing
+    // that does not fit, More is about to go away and hand that room back —
+    // judging by the narrowed list would leave a GitHub tab displaced into
+    // More for no reason once the window has grown again.
+    const moreBox = more?.getBoundingClientRect();
+    if (!moreBox?.width) return false;
+    if (tabs.some((tab) => Math.abs(tab.getBoundingClientRect().top - line) >= 1)) return false;
+    const last = tabs.at(-1).getBoundingClientRect();
+    const gap = tabs.length > 1 ? Math.max(0, tabs[1].getBoundingClientRect().left - tabs[0].getBoundingClientRect().right) : 0;
+    const right = onFirstLine ? box.right : last.right + gap + box.width;
+    return right <= moreBox.right + 1;
+  };
+  const atEnd = tabs.at(-1).nextElementSibling === item;
+  if (atEnd && fits()) return; // the common case: leave the DOM alone
+  // Start from the natural place so a wider window gives the tabs back.
+  if (!atEnd) tabs.at(-1).after(item);
+  for (let i = tabs.length - 1; i > 0 && !fits(); i--) list.insertBefore(item, tabs[i]);
 }
 
 // GitHub links we stole aria-current from, so closing the view (a hash-only
