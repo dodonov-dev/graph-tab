@@ -173,23 +173,60 @@ function buildShell(subtitle) {
 const dismissedBanners = new Set();
 
 // A dismissible status banner, or null when this one was already closed.
-// GitHub's own full-width flash, markup and class names as GitHub renders it
-// (close button first, floated right): primer.css styles it on every
-// repository page, so it looks and themes exactly like GitHub's banners.
-// The close has no js-flash-close — dismissal is remembered here instead.
+//
+// The markup is Primer React's Banner as GitHub renders it — the component
+// behind its own page banners — with the props this view uses: a flush
+// warning or critical banner whose title is visually hidden, the message as
+// its description, and an invisible IconButton to dismiss it. Styles are in
+// UI_CSS. This used to be primer.css's `flash flash-full`, but logged-in
+// GitHub no longer loads primer.css: none of the `.flash`/`.flash-close`
+// rules exist there, and the banner fell back to a bare native button with
+// unpadded text wrapping under it.
+const BANNER_VARIANTS = {
+  warning: { icon: 'alert', label: 'Warning' },
+  critical: { icon: 'stop', label: 'Critical' },
+};
+
 function banner(repoKey, text, error = false) {
   const key = `${repoKey}\n${text}`;
   if (dismissedBanners.has(key)) return null;
-  const node = el('div', `flash flash-full ${error ? 'flash-error' : 'flash-warn'}`);
-  const close = el('button', 'flash-close');
+  const variant = error ? 'critical' : 'warning';
+  const { icon, label } = BANNER_VARIANTS[variant];
+
+  const node = el('section', 'ggt-banner');
+  node.setAttribute('data-component', 'Banner');
+  node.setAttribute('aria-label', label);
+  node.setAttribute('data-variant', variant);
+  node.setAttribute('data-layout', 'default');
+  node.setAttribute('data-actions-layout', 'default');
+  node.setAttribute('data-title-hidden', '');
+  node.setAttribute('data-dismissible', '');
+  node.setAttribute('data-flush', '');
+  node.tabIndex = -1;
+
+  const visual = el('div', 'ggt-banner-icon');
+  visual.appendChild(octicon(icon));
+
+  const content = el('div', 'ggt-banner-content');
+  const title = el('h2', 'ggt-banner-title ggt-visually-hidden', label);
+  title.setAttribute('data-banner-title', '');
+  content.append(title, el('div', 'BannerDescription', text));
+  const container = el('div', 'ggt-banner-container');
+  container.appendChild(content);
+
+  const close = el('button', 'ggt-icon-btn ggt-banner-dismiss');
   close.type = 'button';
-  close.setAttribute('aria-label', 'Dismiss this message');
+  close.setAttribute('data-component', 'IconButton');
+  close.setAttribute('data-variant', 'invisible');
+  close.setAttribute('data-size', 'medium');
+  close.setAttribute('aria-label', 'Dismiss banner');
   close.appendChild(octicon('x'));
   close.addEventListener('click', () => {
     dismissedBanners.add(key);
     node.remove();
   });
-  node.append(close, text);
+
+  node.append(visual, container, close);
   return node;
 }
 
@@ -339,6 +376,66 @@ const UI_CSS = `
 .ggt-seg-text { position: relative; }
 .ggt-seg-text:after { content: attr(data-text); font-weight: var(--base-text-weight-semibold, 600);
   pointer-events: none; user-select: none; visibility: hidden; height: 0; display: block; overflow: hidden; }
+
+/* Banner, from GitHub's logged-in bundle (github.githubassets.com/assets/
+   primer-react-CRqncrP6.css): prc-Banner-* -> .ggt-banner-*,
+   prc-Button-ButtonBase + prc-Button-IconButton -> .ggt-icon-btn,
+   prc-VisuallyHidden-VisuallyHidden -> .ggt-visually-hidden. Only the rules
+   for the props banner() uses (no actions; warning and critical) are kept,
+   in the bundle's order, which matters: the dismiss rules come after the
+   IconButton ones and override their padding and display. */
+.ggt-icon-btn { appearance: none; border: var(--borderWidth-thin, .0625rem) solid;
+  border-color: var(--button-default-borderColor-rest, #d1d9e0); border-radius: var(--borderRadius-medium, .375rem);
+  color: var(--button-default-fgColor-rest, #25292e); cursor: pointer; font-family: inherit;
+  font-size: var(--text-body-size-medium, .875rem); font-weight: var(--base-text-weight-medium, 500);
+  align-items: center; gap: var(--base-size-8, .5rem); height: var(--control-medium-size, 2rem); min-width: max-content;
+  padding: 0 var(--control-medium-paddingInline-normal, .75rem); text-align: center; user-select: none;
+  background-color: #0000; justify-content: space-between; text-decoration: none;
+  transition: color 80ms cubic-bezier(.65,0,.35,1), fill 80ms cubic-bezier(.65,0,.35,1),
+    background-color 80ms cubic-bezier(.65,0,.35,1), border-color 80ms cubic-bezier(.65,0,.35,1); display: flex; }
+.ggt-icon-btn:hover { transition-duration: 80ms; }
+.ggt-icon-btn:focus-visible { box-shadow: none;
+  outline: 2px solid var(--focus-outline-color, var(--focus-outlineColor, #0969da)); outline-offset: -2px; }
+.ggt-icon-btn:active { transition: none; }
+@media (forced-colors: active) { .ggt-icon-btn:focus { outline: 1px solid #0000; } }
+.ggt-icon-btn { min-width: unset; padding: unset; width: var(--control-medium-size, 2rem); flex-shrink: 0;
+  place-content: center; display: inline-grid; }
+.ggt-icon-btn:where([data-variant=invisible]) { border-color: var(--button-invisible-borderColor-rest, #fff0);
+  box-shadow: none; color: var(--button-default-fgColor-rest, #25292e); }
+.ggt-icon-btn:where([data-variant=invisible]):hover { background-color: var(--button-invisible-bgColor-hover, #818b981a);
+  border-color: var(--button-invisible-borderColor-hover, #fff0); }
+.ggt-icon-btn:where([data-variant=invisible]):active { background-color: var(--button-invisible-bgColor-active, #818b9826); }
+.ggt-icon-btn:where([data-variant=invisible]) { color: var(--button-invisible-iconColor-rest, #59636e); }
+.ggt-visually-hidden:not(:focus):not(:active):not(:focus-within) { clip-path: inset(50%); white-space: nowrap;
+  width: 1px; height: 1px; position: absolute; overflow: hidden; }
+.ggt-banner { background-color: var(--banner-bgColor); border: var(--borderWidth-thin, .0625rem) solid var(--banner-borderColor);
+  border-radius: var(--borderRadius-medium, .375rem); padding: var(--base-size-8, .5rem);
+  grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; display: grid; }
+@supports (container-type: inline-size) { .ggt-banner[data-actions-layout=default] { container: banner / inline-size; } }
+.ggt-banner[data-flush] { border-left: none; border-right: none; border-radius: 0; }
+.ggt-banner[data-variant=critical] { --banner-bgColor: var(--bgColor-danger-muted, #ffebe9);
+  --banner-borderColor: var(--borderColor-danger-muted, #ff818266); --banner-icon-fgColor: var(--fgColor-danger, #d1242f); }
+.ggt-banner[data-variant=warning] { --banner-bgColor: var(--bgColor-attention-muted, #fff8c5);
+  --banner-borderColor: var(--borderColor-attention-muted, #d4a72c66); --banner-icon-fgColor: var(--fgColor-attention, #9a6700); }
+.ggt-banner-container { align-items: start; column-gap: var(--base-size-4, .25rem);
+  font-size: var(--text-body-size-medium, .875rem); line-height: var(--text-body-lineHeight-medium, 1.5);
+  row-gap: var(--base-size-4, .25rem); }
+.ggt-banner :where(.ggt-banner-container) { flex-wrap: wrap; justify-content: space-between; display: flex; }
+.ggt-banner-content { margin-block: var(--base-size-8, .5rem); row-gap: var(--base-size-4, .25rem); grid-column-start: 1; display: grid; }
+.ggt-banner[data-title-hidden]:not([data-has-actions]) .ggt-banner-content { margin-block: var(--base-size-6, .375rem); }
+@media screen and (width >= 544px) { .ggt-banner-content { flex: 1; } }
+.ggt-banner-title { font-size: inherit; font-weight: var(--base-text-weight-semibold, 600); margin: 0; }
+.ggt-banner-icon { padding: var(--base-size-8, .5rem); place-items: center; display: grid; }
+.ggt-banner-icon svg { color: var(--banner-icon-fgColor); height: var(--base-size-20, 1.25rem); fill: var(--banner-icon-fgColor); }
+.ggt-banner[data-title-hidden]:not([data-has-actions]) .ggt-banner-icon svg { height: var(--base-size-16, 1rem); }
+.ggt-banner-dismiss { padding: var(--base-size-8, .5rem); place-items: center; margin-inline-start: var(--base-size-4, .25rem); display: grid; }
+.ggt-banner-dismiss svg { color: var(--banner-icon-fgColor); }
+@container banner (width <= 500px) { .ggt-banner-container { display: grid; } }
+@container banner (width >= 500px) { .ggt-banner-container { grid-template-columns: auto auto; display: grid; } }
+/* Ours: flush banners stack under the toolbar inside the shell; pulling each
+   up a pixel lets its top border cover the edge above instead of doubling
+   it, as primer.css's flash-full did. */
+.ggt-shell > .ggt-banner { margin-top: -1px; }
 
 /* Anchor button: .ggt-btn (style.css) is already Primer's medium button, so
    only the slot layout and the counter belong here. */
