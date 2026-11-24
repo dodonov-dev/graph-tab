@@ -225,12 +225,29 @@
 .ggt-row:hover {
   background: var(--bgColor-muted, #f6f8fa);
 }
+/* The Description column: ref chips, then the subject. It may shrink to
+   nothing but never pushes author, date and sha out of the row. Inside it
+   the subject gives way first (it ellipsizes, as before), so chips stay
+   whole on a normal width; on a narrow screen they get at most half the
+   column and are cut short themselves, leaving the subject the rest. */
+.ggt-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .ggt-refs {
   display: flex;
   gap: 4px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
 }
 .ggt-ref {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--fontStack-sansSerif, 'Mona Sans VF', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji');
   font-size: 11px;
   line-height: 16px;
@@ -247,7 +264,7 @@ a.ggt-ref:hover {
   border-style: dashed;
 }
 .ggt-msg {
-  flex: 1 1 auto;
+  flex: 1 1000 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

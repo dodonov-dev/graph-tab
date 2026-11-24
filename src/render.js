@@ -831,6 +831,9 @@ export function render(container, model) {
 
   commits.forEach((commit, i) => {
     const row = el('div', 'ggt-row');
+    // Refs and subject share the Description column; see .ggt-desc.
+    const desc = el('span', 'ggt-desc');
+    row.appendChild(desc);
 
     const refs = refsByOid.get(commit.oid);
     const tagNames = tagsByOid.get(commit.oid);
@@ -843,6 +846,7 @@ export function render(container, model) {
       for (const name of refs || []) {
         const chip = el('a', 'ggt-ref', name);
         chip.href = treeHref(name);
+        chip.title = name; // the chip may be cut short; this is the full name
         chip.style.color = colorOf(graph.nodes[i].color);
         chip.style.borderColor = 'currentColor';
         refsBox.appendChild(chip);
@@ -855,7 +859,7 @@ export function render(container, model) {
         chip.style.borderColor = 'currentColor';
         refsBox.appendChild(chip);
       }
-      row.appendChild(refsBox);
+      desc.appendChild(refsBox);
     }
 
     const msg = el('a', 'ggt-msg', commit.subject || commit.oid.slice(0, 7));
@@ -863,7 +867,7 @@ export function render(container, model) {
     if (commit.message !== commit.subject || commit.author) {
       msg.title = commit.message + (commit.author ? `\n\n${commit.author}` : '');
     }
-    row.appendChild(msg);
+    desc.appendChild(msg);
 
     const author = el(commit.login ? 'a' : 'span', 'ggt-author');
     if (commit.login) author.href = `/${encodeURIComponent(commit.login)}`;
